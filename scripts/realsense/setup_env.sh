@@ -9,7 +9,7 @@
 # Prerequisites:
 #   - NVIDIA GPU with CUDA support
 #   - conda (Miniconda or Anaconda)
-#   - Intel RealSense D435i or D455
+#   - Intel RealSense D415, D435i, or D455
 #   - USB 3.0 port and cable
 #
 # Usage:
@@ -87,7 +87,7 @@ conda activate "${ENV_NAME}"
 
 # ---- Install system dependencies ------------------------------------------
 info "Installing system-level dependencies via conda..."
-conda install -c conda-forge ffmpeg -y
+conda install -c conda-forge ffmpeg colmap -y
 
 # ---- Install PyTorch with CUDA ---------------------------------------------
 info "Installing PyTorch ${TORCH_VERSION} with CUDA ${CUDA_VERSION}..."
@@ -169,6 +169,10 @@ echo "  sai-cli:         ${sai_cli}"
 sai_rec=$(command -v sai-record-realsense 2>/dev/null && echo "found" || echo "NOT in PATH")
 echo "  sai-record-rs:   ${sai_rec}"
 
+# COLMAP (needed for D415 pipeline)
+colmap_ok=$(command -v colmap 2>/dev/null && echo "found" || echo "NOT in PATH")
+echo "  COLMAP:          ${colmap_ok}"
+
 # gs-mesh
 gs_mesh=$(command -v gs-mesh 2>/dev/null && echo "found" || echo "NOT in PATH")
 echo "  gs-mesh:         ${gs_mesh}"
@@ -181,10 +185,8 @@ echo ""
 info "To activate this environment in the future, run:"
 echo "  conda activate ${ENV_NAME}"
 echo ""
-info "Quick start:"
-echo "  1. Record:  ./scripts/realsense/record.sh --output ./data/my_scene"
-echo "  2. Process: ./scripts/realsense/process.sh ./data/my_scene ./datasets/custom/my_scene"
-echo "  3. Train:   ./scripts/realsense/train.sh ./datasets/custom/my_scene"
-echo "  4. Mesh:    ./scripts/realsense/extract_mesh.sh <config_path>"
-echo "  OR run the full pipeline:"
-echo "  ./scripts/realsense/run_pipeline.sh ./data/my_scene my_scene"
+info "Quick start (D435i/D455 with IMU):"
+echo "  ./scripts/realsense/run_pipeline.sh --scene my_room"
+echo ""
+info "Quick start (D415, no IMU — uses COLMAP for poses):"
+echo "  ./scripts/realsense/run_pipeline.sh --camera d415 --scene my_desk"

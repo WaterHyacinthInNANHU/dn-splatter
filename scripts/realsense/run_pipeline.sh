@@ -9,6 +9,7 @@
 #   ./scripts/realsense/run_pipeline.sh [OPTIONS]
 #
 # Options:
+#   --camera TYPE       Camera type: d435i (default, uses SpectacularAI), d415 (uses COLMAP)
 #   --scene NAME        Scene name for output organization (default: scene_<timestamp>)
 #   --recording DIR     Path to an existing recording (skips recording step)
 #   --dataset DIR       Path to already-processed dataset (skips recording + processing)
@@ -16,18 +17,25 @@
 #   --method METHOD     Training method: dn-splatter (default), ags-mesh
 #   --mesh-method M     Mesh extraction: o3dtsdf (default), tsdf, dn, gaussians
 #   --key-frame-dist M  Keyframe distance in meters (default: 0.1)
+#   --every-n N         D415 only: save every Nth frame (default: 15)
 #   --max-iter N        Max training iterations (default: 30000)
 #   --skip-mesh         Skip mesh extraction after training
 #   -h, --help          Show this help
 #
 # Examples:
-#   # Full pipeline from scratch
+#   # Full pipeline with D435i/D455 (default, uses SpectacularAI)
 #   ./scripts/realsense/run_pipeline.sh --scene living_room
 #
-#   # Start from existing recording
+#   # Full pipeline with D415 (no IMU, uses COLMAP for poses)
+#   ./scripts/realsense/run_pipeline.sh --camera d415 --scene my_desk
+#
+#   # D415 from existing .bag recording
+#   ./scripts/realsense/run_pipeline.sh --camera d415 --recording ./data/my_scene.bag --scene table
+#
+#   # Start from existing recording (D435i)
 #   ./scripts/realsense/run_pipeline.sh --recording ./data/my_recording --scene table
 #
-#   # Start from processed dataset
+#   # Start from processed dataset (any camera)
 #   ./scripts/realsense/run_pipeline.sh --dataset ./datasets/custom/my_scene
 #
 #   # Only extract mesh from trained model
@@ -52,6 +60,7 @@ ok()    { echo -e "${GREEN}[ OK ]${NC} $*"; }
 step()  { echo -e "\n${BOLD}${YELLOW}>>> $* <<<${NC}\n"; }
 
 # Defaults
+CAMERA="d435i"
 SCENE=""
 RECORDING=""
 DATASET=""
@@ -59,6 +68,7 @@ CONFIG=""
 METHOD="dn-splatter"
 MESH_METHOD="o3dtsdf"
 KEY_FRAME_DIST="0.1"
+EVERY_N="15"
 MAX_ITER="30000"
 SKIP_MESH=false
 
@@ -70,6 +80,7 @@ usage() {
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --camera)          CAMERA="$2"; shift 2 ;;
         --scene)           SCENE="$2"; shift 2 ;;
         --recording)       RECORDING="$2"; shift 2 ;;
         --dataset)         DATASET="$2"; shift 2 ;;
@@ -77,6 +88,7 @@ while [[ $# -gt 0 ]]; do
         --method)          METHOD="$2"; shift 2 ;;
         --mesh-method)     MESH_METHOD="$2"; shift 2 ;;
         --key-frame-dist)  KEY_FRAME_DIST="$2"; shift 2 ;;
+        --every-n)         EVERY_N="$2"; shift 2 ;;
         --max-iter)        MAX_ITER="$2"; shift 2 ;;
         --skip-mesh)       SKIP_MESH=true; shift ;;
         -h|--help)         usage ;;
@@ -89,17 +101,27 @@ if [[ -z "$SCENE" ]]; then
     SCENE="scene_$(date +"%Y%m%d_%H%M%S")"
 fi
 
-RECORDING_DIR="${PROJECT_DIR}/data/${SCENE}"
+# Set recording path based on camera type
+if [[ "$CAMERA" == "d415" ]]; then
+    RECORDING_DIR="${PROJECT_DIR}/data/${SCENE}.bag"
+else
+    RECORDING_DIR="${PROJECT_DIR}/data/${SCENE}"
+fi
 DATASET_DIR="${PROJECT_DIR}/datasets/custom/${SCENE}"
 MESH_DIR="${PROJECT_DIR}/meshes/${SCENE}"
 
 echo "============================================================"
 echo "  DN-Splatter + RealSense: Full Pipeline"
 echo "============================================================"
+echo "  Camera:          ${CAMERA}"
 echo "  Scene:           ${SCENE}"
 echo "  Method:          ${METHOD}"
 echo "  Mesh method:     ${MESH_METHOD}"
+if [[ "$CAMERA" == "d415" ]]; then
+echo "  Every N frames:  ${EVERY_N}"
+else
 echo "  Keyframe dist:   ${KEY_FRAME_DIST}m"
+fi
 echo "  Max iterations:  ${MAX_ITER}"
 echo "============================================================"
 
@@ -107,12 +129,16 @@ START_TIME=$SECONDS
 
 # ---- Step 1: Record -------------------------------------------------------
 if [[ -z "$CONFIG" && -z "$DATASET" && -z "$RECORDING" ]]; then
-    step "Step 1/4: Recording with RealSense"
+    step "Step 1/4: Recording with RealSense (${CAMERA})"
     info "Output: ${RECORDING_DIR}"
     info "Press Ctrl+C to stop recording when done."
     echo ""
 
-    "${SCRIPT_DIR}/record.sh" --output "${RECORDING_DIR}"
+    if [[ "$CAMERA" == "d415" ]]; then
+        "${SCRIPT_DIR}/record_d415.sh" --output "${RECORDING_DIR}"
+    else
+        "${SCRIPT_DIR}/record.sh" --output "${RECORDING_DIR}"
+    fi
 
     RECORDING="${RECORDING_DIR}"
     ok "Recording complete: ${RECORDING}"
@@ -128,12 +154,17 @@ fi
 
 # ---- Step 2: Process ------------------------------------------------------
 if [[ -z "$CONFIG" && -z "$DATASET" ]]; then
-    step "Step 2/4: Processing recording"
+    step "Step 2/4: Processing recording (${CAMERA})"
     info "Input: ${RECORDING}"
     info "Output: ${DATASET_DIR}"
 
-    "${SCRIPT_DIR}/process.sh" "${RECORDING}" "${DATASET_DIR}" \
-        --key-frame-dist "${KEY_FRAME_DIST}"
+    if [[ "$CAMERA" == "d415" ]]; then
+        "${SCRIPT_DIR}/process_d415.sh" "${RECORDING}" "${DATASET_DIR}" \
+            --every-n "${EVERY_N}"
+    else
+        "${SCRIPT_DIR}/process.sh" "${RECORDING}" "${DATASET_DIR}" \
+            --key-frame-dist "${KEY_FRAME_DIST}"
+    fi
 
     DATASET="${DATASET_DIR}"
     ok "Processing complete: ${DATASET}"
@@ -189,6 +220,7 @@ echo ""
 echo "============================================================"
 echo -e "  ${GREEN}${BOLD}Pipeline Complete!${NC}"
 echo "============================================================"
+echo "  Camera:     ${CAMERA}"
 echo "  Scene:      ${SCENE}"
 echo "  Recording:  ${RECORDING:-skipped}"
 echo "  Dataset:    ${DATASET:-skipped}"

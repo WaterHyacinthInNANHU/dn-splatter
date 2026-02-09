@@ -64,6 +64,21 @@ else
     ok "ffmpeg found"
 fi
 
+# Install COLMAP (needed for D415 pipeline)
+if ! command -v colmap &> /dev/null; then
+    info "COLMAP not found. Installing via conda..."
+    if command -v conda &> /dev/null; then
+        conda install -c conda-forge colmap -y
+        ok "COLMAP installed via conda"
+    else
+        warn "conda not found, cannot auto-install COLMAP."
+        warn "Install manually: sudo apt install colmap"
+        warn "  OR install conda first, then re-run this script."
+    fi
+else
+    ok "COLMAP found"
+fi
+
 # ---- Create virtual environment --------------------------------------------
 info "Creating virtual environment with Python ${PYTHON_VERSION}..."
 
@@ -139,6 +154,9 @@ echo "  SpectacularAI:   ${sai_ok}"
 rs_ok=$(python -c "import pyrealsense2; print('installed')" 2>&1 || echo "NOT FOUND")
 echo "  pyrealsense2:    ${rs_ok}"
 
+colmap_ok=$(command -v colmap &>/dev/null && echo "found" || echo "NOT in PATH")
+echo "  COLMAP:          ${colmap_ok}"
+
 gs_mesh_ok=$(command -v gs-mesh &>/dev/null && echo "found" || echo "NOT in PATH")
 echo "  gs-mesh:         ${gs_mesh_ok}"
 
@@ -154,6 +172,10 @@ info "Or use uv run to execute commands directly:"
 echo "  uv run ns-train --help"
 echo "  uv run gs-mesh --help"
 echo ""
-info "Quick start:"
+info "Quick start (D435i/D455 with IMU):"
 echo "  source .venv/bin/activate"
 echo "  ./scripts/realsense/run_pipeline.sh --scene my_room"
+echo ""
+info "Quick start (D415, no IMU — uses COLMAP for poses):"
+echo "  source .venv/bin/activate"
+echo "  ./scripts/realsense/run_pipeline.sh --camera d415 --scene my_desk"

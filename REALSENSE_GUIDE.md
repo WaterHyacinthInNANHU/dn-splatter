@@ -1,6 +1,10 @@
 # DN-Splatter + RealSense Camera Guide
 
-End-to-end guide for 3D Gaussian Splatting and mesh reconstruction using an Intel RealSense depth camera with DN-Splatter. Uses [SpectacularAI](https://www.spectacularai.com/mapping) SDK for Visual-Inertial SLAM preprocessing.
+End-to-end guide for 3D Gaussian Splatting and mesh reconstruction using an Intel RealSense depth camera with DN-Splatter.
+
+Supports two camera paths:
+- **D435i / D455** (with IMU) — uses [SpectacularAI](https://www.spectacularai.com/mapping) SDK for Visual-Inertial SLAM
+- **D415** (no IMU) — records to `.bag`, uses COLMAP for pose estimation
 
 ## Table of Contents
 
@@ -25,10 +29,11 @@ End-to-end guide for 3D Gaussian Splatting and mesh reconstruction using an Inte
 | Requirement | Details |
 |---|---|
 | **GPU** | NVIDIA GPU with CUDA support (RTX 2070+ recommended, 8 GB+ VRAM) |
-| **Camera** | Intel RealSense **D435i** or **D455** (the "i" suffix is required — it has an IMU) |
+| **Camera** | Intel RealSense **D415**, **D435i**, or **D455** |
 | **USB** | USB 3.0 cable connected to a USB 3.0 port (USB 2.0 will not work) |
 
-> **Note:** The D435 (without "i") is **not supported** — SpectacularAI requires the onboard IMU for Visual-Inertial SLAM.
+> **D415** — no IMU, uses COLMAP for poses. Works well on textured scenes.
+> **D435i / D455** — has IMU, uses SpectacularAI VIO for faster, more robust tracking.
 
 ### Software
 | Requirement | Details |
@@ -57,6 +62,7 @@ This installs:
 - DN-Splatter (editable install)
 - SpectacularAI SDK (with visualization tools)
 - pyrealsense2
+- COLMAP (for D415 pose estimation)
 - ffmpeg
 
 After installation, activate the environment:
@@ -109,7 +115,7 @@ If you prefer step-by-step control:
 # 1. Create conda environment
 conda create -n dn-splatter-rs python=3.10 -y
 conda activate dn-splatter-rs
-conda install -c conda-forge ffmpeg -y
+conda install -c conda-forge ffmpeg colmap -y
 
 # 2. Install PyTorch with CUDA
 pip install torch==2.1.2+cu118 torchvision==0.16.2+cu118 \
@@ -167,8 +173,10 @@ SpectacularAI uses its own recording format (`data.jsonl` + `data.mkv` + `calibr
 
 ## Pipeline Overview
 
+### D435i / D455 (with IMU) — SpectacularAI path
+
 ```
-  RealSense Camera
+  RealSense D435i/D455
         │
         ▼
   ┌─────────────┐    sai-record-realsense
@@ -177,7 +185,7 @@ SpectacularAI uses its own recording format (`data.jsonl` + `data.mkv` + `calibr
          │  recording/ (data.jsonl, data.mkv, calibration.json)
          ▼
   ┌─────────────┐    process_sai.py → sai-cli process
-  │  2. Process  │    Visual-Inertial SLAM, loop closure, keyframe selection
+  │  2. Process  │    Visual-Inertial SLAM → poses + keyframes
   └──────┬──────┘
          │  dataset/ (transforms.json, images/, depth/, sparse_pc.ply)
          ▼
@@ -187,91 +195,131 @@ SpectacularAI uses its own recording format (`data.jsonl` + `data.mkv` + `calibr
          │  outputs/ (config.yml, checkpoints)
          ▼
   ┌─────────────┐    gs-mesh o3dtsdf
-  │  4. Mesh     │    TSDF fusion → marching cubes → triangle mesh
-  └─────────────┘
-         │
+  │  4. Mesh     │    TSDF fusion → triangle mesh
+  └─────────────┘ → mesh.ply
+```
+
+### D415 (no IMU) — COLMAP path
+
+```
+  RealSense D415
+        │
+        ▼
+  ┌─────────────┐    record_realsense.py (pyrealsense2)
+  │  1. Record   │    Captures RGB + depth to .bag file
+  └──────┬──────┘
+         │  recording.bag
          ▼
-      mesh.ply
+  ┌─────────────┐    process_d415.py → extract frames → COLMAP
+  │  2. Process  │    Frame extraction + SfM pose estimation
+  └──────┬──────┘
+         │  dataset/ (transforms.json, images/, depth/, sparse_pc.ply)
+         ▼
+     (same as above: Train → Mesh)
 ```
 
 ---
 
 ## Step 1: Record Data
 
-Connect your RealSense D435i/D455 via USB 3.0, then:
+Connect your RealSense camera via USB 3.0.
+
+### D435i / D455 (with IMU)
 
 ```bash
 ./scripts/realsense/record.sh --output ./data/my_scene
 ```
 
-A live preview window shows the camera feed and VIO tracking. Move the camera slowly around the scene. Press `Ctrl+C` to stop.
-
-### Options
+A live preview window shows the camera feed and VIO tracking. Press `Ctrl+C` to stop.
 
 | Flag | Description |
 |---|---|
-| `--output DIR` | Where to save the recording (default: `./data/realsense_<timestamp>`) |
-| `--no-preview` | Disable the live preview window (useful for headless servers) |
+| `--output DIR` | Where to save (default: `./data/realsense_<timestamp>`) |
+| `--no-preview` | Disable live preview |
 | `--recording-only` | Only record raw data, skip live VIO |
+
+Output: `data/my_scene/` containing `data.jsonl`, `data.mkv`, `calibration.json`
+
+### D415 (no IMU)
+
+```bash
+./scripts/realsense/record_d415.sh --output ./data/my_scene.bag
+```
+
+Records to a `.bag` file (RealSense native format). Press `Ctrl+C` to stop.
+
+| Flag | Description |
+|---|---|
+| `--output PATH` | Output .bag file (default: `./data/d415_<timestamp>.bag`) |
+| `--width W` | Stream width (default: 1280) |
+| `--height H` | Stream height (default: 720) |
+| `--fps N` | Frame rate (default: 30) |
+| `--no-preview` | Disable live preview |
+
+Output: single `.bag` file
 
 ### Recording Tips
 
 - **Move slowly and smoothly** — fast motion causes blur and tracking loss
 - **Overlap** — ensure good overlap between different viewing angles
 - **Lighting** — avoid very dark rooms or direct IR interference
+- **Textured surfaces** (D415 especially) — COLMAP needs visual features; avoid blank walls
 - **Coverage** — capture the scene from multiple heights and angles
 - **Loop** — return to starting position to enable loop closure
 - **Duration** — 1-3 minutes is usually sufficient for a single room
-
-### Output Structure
-
-```
-data/my_scene/
-├── data.jsonl          # Frame metadata + IMU data
-├── data.mkv            # Encoded video streams
-├── calibration.json    # Camera intrinsics
-└── vio_config.yaml     # SDK configuration
-```
 
 ---
 
 ## Step 2: Process Recording
 
-Convert the raw recording into a DN-Splatter compatible dataset:
+### D435i / D455 (with IMU)
 
 ```bash
 ./scripts/realsense/process.sh ./data/my_scene ./datasets/custom/my_scene
 ```
 
-This runs SpectacularAI's SLAM pipeline with parameters tuned for DN-Splatter:
-- Keyframe selection at 10 cm intervals
-- PNG output for lossless quality
-- Optimized feature tracking (2000 keypoints, 50 optimizer iterations)
-
-### Options
+Runs SpectacularAI SLAM with tuned parameters (10 cm keyframe spacing, 2000 keypoints).
 
 | Flag | Description |
 |---|---|
-| `--preview` | Show 3D point cloud and trajectory during processing |
-| `--key-frame-dist M` | Keyframe spacing in meters. Use `0.05` for tabletop, `0.10` (default) for desk-scale, `0.15` for room-scale |
+| `--preview` | Show 3D visualization during processing |
+| `--key-frame-dist M` | Keyframe spacing: `0.05` (tabletop), `0.10` (default), `0.15` (room) |
 | `--dry-run` | Print commands without executing |
 
-### Output Structure
+### D415 (no IMU)
+
+```bash
+./scripts/realsense/process_d415.sh ./data/my_scene.bag ./datasets/custom/my_scene
+```
+
+Extracts frames from the `.bag` file, runs COLMAP for pose estimation, and patches `transforms.json` with sensor depth paths.
+
+| Flag | Description |
+|---|---|
+| `--every-n N` | Save every Nth frame (default: 15, ~2fps from 30fps) |
+| `--matching-method M` | COLMAP matching: `exhaustive` (default), `sequential`, `vocab_tree` |
+| `--skip-extraction` | Skip frame extraction (reuse already-extracted frames) |
+| `--skip-colmap` | Skip COLMAP (reuse existing results) |
+| `--dry-run` | Print commands without executing |
+
+> **Tip:** For large datasets (500+ frames), use `--matching-method sequential` to speed up COLMAP.
+
+### Output Structure (both paths)
 
 ```
 datasets/custom/my_scene/
-├── transforms.json         # Camera poses + intrinsics (nerfstudio format)
+├── transforms.json         # Camera poses + intrinsics + depth paths
 ├── sparse_pc.ply           # Sparse 3D point cloud
 ├── images/
 │   ├── frame_00001.png     # Color images
-│   ├── depth_00001.png     # 16-bit depth maps (millimeters)
-│   ├── frame_00002.png
-│   ├── depth_00002.png
 │   └── ...
-└── colmap/sparse/0/        # COLMAP-compatible files
-    ├── cameras.txt
-    ├── images.txt
-    └── points3D.txt
+├── depth/
+│   ├── frame_00001.png     # 16-bit depth maps (millimeters)
+│   └── ...
+└── colmap/sparse/0/        # COLMAP reconstruction
+    ├── cameras.bin
+    ├── images.bin
+    └── points3D.bin
 ```
 
 ---
@@ -406,42 +454,50 @@ python dn_splatter/scripts/isooctree_dn.py <training_output_root> \
 
 ## Full Pipeline (One Command)
 
-Run everything from recording to mesh in one command:
+### D435i / D455
 
 ```bash
 ./scripts/realsense/run_pipeline.sh --scene living_room
 ```
 
-This will:
-1. Open the camera for recording (stop with `Ctrl+C`)
-2. Process the recording into a dataset
-3. Train DN-Splatter
-4. Extract a mesh
+### D415
+
+```bash
+./scripts/realsense/run_pipeline.sh --camera d415 --scene my_desk
+```
+
+Both run: Record → Process → Train → Mesh.
 
 ### Pipeline Options
 
 ```bash
-# Full pipeline with custom settings
+# D415 with custom settings
+./scripts/realsense/run_pipeline.sh \
+    --camera d415 \
+    --scene kitchen \
+    --every-n 10 \
+    --max-iter 30000
+
+# D435i with custom settings
 ./scripts/realsense/run_pipeline.sh \
     --scene kitchen \
     --method ags-mesh \
-    --mesh-method o3dtsdf \
     --key-frame-dist 0.15 \
     --max-iter 30000
 
-# Skip recording (use existing recording)
+# D415 from existing .bag recording
 ./scripts/realsense/run_pipeline.sh \
-    --recording ./data/my_recording \
+    --camera d415 \
+    --recording ./data/my_scene.bag \
     --scene my_scene
 
-# Skip recording + processing (use existing dataset)
+# Skip recording + processing (any camera, same dataset format)
 ./scripts/realsense/run_pipeline.sh \
     --dataset ./datasets/custom/my_scene
 
 # Only extract mesh from a trained model
 ./scripts/realsense/run_pipeline.sh \
-    --config outputs/dn-splatter/.../config.yml \
-    --scene my_scene
+    --config outputs/dn-splatter/.../config.yml
 ```
 
 ---
@@ -515,11 +571,13 @@ All scripts are in `scripts/realsense/`:
 |---|---|
 | `setup_env.sh` | One-step environment installation (conda) |
 | `setup_env_uv.sh` | One-step environment installation (uv) |
-| `record.sh` | Record RGB-D + IMU data with RealSense |
-| `process.sh` | Convert recording to DN-Splatter dataset |
+| `record.sh` | Record with D435i/D455 (SpectacularAI VIO) |
+| `record_d415.sh` | Record with D415 to .bag (pyrealsense2) |
+| `process.sh` | Process D435i/D455 recording (SpectacularAI SLAM) |
+| `process_d415.sh` | Process D415 .bag (COLMAP for poses) |
 | `train.sh` | Train DN-Splatter model |
 | `extract_mesh.sh` | Extract mesh from trained model |
-| `run_pipeline.sh` | End-to-end pipeline (record -> mesh) |
+| `run_pipeline.sh` | End-to-end pipeline (`--camera d415` or `d435i`) |
 | `test_pipeline.sh` | Test pipeline with sample data (no camera) |
 
 Each script supports `--help` for detailed usage information.
