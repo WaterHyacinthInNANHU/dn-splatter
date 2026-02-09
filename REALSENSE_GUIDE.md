@@ -19,6 +19,7 @@ Supports two camera paths:
 - [Step 3: Train DN-Splatter](#step-3-train-dn-splatter)
 - [Step 4: Extract Mesh](#step-4-extract-mesh)
 - [Full Pipeline (One Command)](#full-pipeline-one-command)
+- [Split-Machine Workflow](#split-machine-workflow)
 - [Tips & Troubleshooting](#tips--troubleshooting)
 
 ---
@@ -65,6 +66,27 @@ This installs:
 - COLMAP (for D415 pose estimation)
 - ffmpeg
 
+### Install Modes
+
+Both setup scripts support `--mode` for split-machine workflows (e.g., record on a laptop, train on a GPU server):
+
+| Mode | Flag | GPU Required | What's Installed |
+|---|---|---|---|
+| **full** (default) | `--mode full` | Yes | Everything |
+| **collect** | `--mode collect` | No | pyrealsense2, SpectacularAI, ffmpeg |
+| **train** | `--mode train` | Yes | PyTorch, nerfstudio, DN-Splatter, COLMAP, pyrealsense2 |
+
+```bash
+# Collection machine (laptop with camera, no GPU needed)
+./scripts/realsense/setup_env.sh --mode collect
+
+# Training machine (GPU server)
+./scripts/realsense/setup_env.sh --mode train
+
+# Single machine (everything)
+./scripts/realsense/setup_env.sh
+```
+
 After installation, activate the environment:
 
 ```bash
@@ -95,6 +117,14 @@ git clone https://github.com/maturk/dn-splatter
 cd dn-splatter
 chmod +x scripts/realsense/setup_env_uv.sh
 ./scripts/realsense/setup_env_uv.sh
+```
+
+Install modes work the same way:
+
+```bash
+./scripts/realsense/setup_env_uv.sh --mode collect   # collection machine
+./scripts/realsense/setup_env_uv.sh --mode train     # GPU training machine
+./scripts/realsense/setup_env_uv.sh                  # everything (default)
 ```
 
 This creates a `.venv/` in the project directory. Activate with:
@@ -499,6 +529,56 @@ Both run: Record → Process → Train → Mesh.
 ./scripts/realsense/run_pipeline.sh \
     --config outputs/dn-splatter/.../config.yml
 ```
+
+---
+
+## Split-Machine Workflow
+
+When data collection and training happen on different machines (e.g., laptop with camera + GPU server):
+
+### 1. Collection Machine (laptop, no GPU needed)
+
+```bash
+# Install collection-only dependencies
+./scripts/realsense/setup_env_uv.sh --mode collect
+source .venv/bin/activate
+
+# Record with D415
+./scripts/realsense/record_d415.sh --output ./data/my_scene.bag
+
+# Or record with D435i/D455
+./scripts/realsense/record.sh --output ./data/my_scene
+```
+
+### 2. Transfer Recording
+
+```bash
+# Copy .bag file (D415) or recording directory (D435i) to the training machine
+scp ./data/my_scene.bag gpu-server:~/dn-splatter/data/
+# Or for D435i:
+scp -r ./data/my_scene/ gpu-server:~/dn-splatter/data/
+```
+
+### 3. Training Machine (GPU server)
+
+```bash
+# Install training-only dependencies
+./scripts/realsense/setup_env_uv.sh --mode train
+source .venv/bin/activate
+
+# Process + train + mesh in one command (D415)
+./scripts/realsense/run_pipeline.sh \
+    --camera d415 \
+    --recording ./data/my_scene.bag \
+    --scene my_scene
+
+# Or step by step:
+./scripts/realsense/process_d415.sh ./data/my_scene.bag ./datasets/custom/my_scene
+./scripts/realsense/train.sh ./datasets/custom/my_scene
+./scripts/realsense/extract_mesh.sh $(ls -t outputs/dn-splatter/*/config.yml | head -1)
+```
+
+> **Note:** The `train` mode installs pyrealsense2 on the GPU server too, which is needed to extract frames from `.bag` files during processing.
 
 ---
 
