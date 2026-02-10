@@ -23,6 +23,17 @@
 
 set -euo pipefail
 
+# Ensure CUDA toolkit is in PATH (needed by gsplat for JIT compilation)
+if ! command -v nvcc &>/dev/null; then
+    for cuda_dir in /usr/local/cuda /usr/local/cuda-12 /usr/local/cuda-11; do
+        if [[ -x "${cuda_dir}/bin/nvcc" ]]; then
+            export PATH="${cuda_dir}/bin:${PATH}"
+            export CUDA_HOME="${cuda_dir}"
+            break
+        fi
+    done
+fi
+
 # Defaults
 DATA_DIR=""
 METHOD="dn-splatter"
@@ -102,6 +113,11 @@ if [[ "$METHOD" == "ags-mesh" ]]; then
     CMD+=(normal-nerfstudio --data "${DATA_DIR}" --load-depth-confidence-masks True)
 else
     CMD+=(normal-nerfstudio --data "${DATA_DIR}")
+fi
+
+# When using depth-based normals, skip loading pre-computed normal images from disk
+if [[ "$NORMAL_SUP" == "depth" ]]; then
+    CMD+=(--load-normals False)
 fi
 
 # Append any extra arguments

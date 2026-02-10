@@ -199,27 +199,118 @@ def extract_frames_from_directory(frames_dir, output_dir):
     return meta
 
 
-def run_colmap(output_dir, matching_method="exhaustive"):
-    """Run COLMAP via ns-process-data to get poses and transforms.json.
+def run_colmap(output_dir, matching_method="exhaustive", meta=None):
+    """Run COLMAP directly with known camera intrinsics, then generate transforms.json.
+
+    Using known RealSense intrinsics improves COLMAP reconstruction on
+    textureless/dark scenes by eliminating intrinsic estimation uncertainty.
 
     Args:
         output_dir: Dataset directory (must have images/ subdirectory)
         matching_method: COLMAP matching method
+        meta: dict with camera intrinsics (fx, fy, cx, cy, coeffs) from frame extraction
     """
-    images_dir = Path(output_dir) / "images"
+    output_dir = Path(output_dir)
+    images_dir = output_dir / "images"
+    colmap_dir = output_dir / "colmap"
+    sparse_dir = colmap_dir / "sparse"
+    sparse_dir.mkdir(parents=True, exist_ok=True)
+    db_path = colmap_dir / "database.db"
 
-    cmd = [
-        "ns-process-data", "images",
-        "--data", str(images_dir),
-        "--output-dir", str(output_dir),
-        "--skip-image-processing",
-        "--matching-method", matching_method,
+    # Remove stale database if present
+    db_path.unlink(missing_ok=True)
+
+    # Build camera params string if intrinsics are known
+    camera_model = "OPENCV"
+    camera_params_arg = []
+    if meta and "fx" in meta:
+        fx, fy = meta["fx"], meta["fy"]
+        cx, cy = meta["cx"], meta["cy"]
+        coeffs = meta.get("coeffs", [0, 0, 0, 0, 0])
+        # OPENCV model: fx, fy, cx, cy, k1, k2, p1, p2
+        k1 = coeffs[0] if len(coeffs) > 0 else 0
+        k2 = coeffs[1] if len(coeffs) > 1 else 0
+        p1 = coeffs[2] if len(coeffs) > 2 else 0
+        p2 = coeffs[3] if len(coeffs) > 3 else 0
+        params_str = f"{fx},{fy},{cx},{cy},{k1},{k2},{p1},{p2}"
+        camera_params_arg = [
+            "--ImageReader.camera_params", params_str,
+        ]
+        print(f"[INFO] Using known intrinsics: fx={fx:.2f}, fy={fy:.2f}, cx={cx:.2f}, cy={cy:.2f}")
+
+    # Step 1: Feature extraction
+    feat_cmd = [
+        "colmap", "feature_extractor",
+        "--database_path", str(db_path),
+        "--image_path", str(images_dir),
+        "--ImageReader.single_camera", "1",
+        "--ImageReader.camera_model", camera_model,
+    ] + camera_params_arg
+    print(f"[CMD] {' '.join(feat_cmd)}")
+    subprocess.check_call(feat_cmd)
+    print("[OK] Feature extraction complete")
+
+    # Step 2: Feature matching
+    matcher_name = f"{matching_method}_matcher"
+    match_cmd = [
+        "colmap", matcher_name,
+        "--database_path", str(db_path),
     ]
+    if matching_method == "sequential":
+        match_cmd += ["--SequentialMatching.overlap", "10"]
+    print(f"[CMD] {' '.join(match_cmd)}")
+    subprocess.check_call(match_cmd)
+    print("[OK] Feature matching complete")
 
-    print(f"[CMD] {' '.join(cmd)}")
-    print("[INFO] Running COLMAP (this may take a while)...")
-    subprocess.check_call(cmd)
-    print("[OK] COLMAP complete")
+    # Step 3: Sparse reconstruction (mapper)
+    mapper_cmd = [
+        "colmap", "mapper",
+        "--database_path", str(db_path),
+        "--image_path", str(images_dir),
+        "--output_path", str(sparse_dir),
+    ]
+    print(f"[CMD] {' '.join(mapper_cmd)}")
+    subprocess.check_call(mapper_cmd)
+    print("[OK] Sparse reconstruction complete")
+
+    # Find the largest reconstruction (COLMAP may produce multiple)
+    recon_dirs = sorted(
+        [d for d in sparse_dir.iterdir() if d.is_dir()],
+        key=lambda d: d.name,
+    )
+    if not recon_dirs:
+        print("[ERROR] No COLMAP reconstruction found!")
+        sys.exit(1)
+
+    # Pick the reconstruction with the most images
+    best_recon = recon_dirs[0]
+    best_size = 0
+    for rd in recon_dirs:
+        images_bin = rd / "images.bin"
+        size = images_bin.stat().st_size if images_bin.exists() else 0
+        print(f"[INFO] Reconstruction {rd.name}: images.bin size = {size} bytes")
+        if size > best_size:
+            best_size = size
+            best_recon = rd
+    recon_dir = best_recon
+    print(f"[INFO] Using reconstruction: {recon_dir}")
+
+    # Step 4: Convert COLMAP output to transforms.json
+    from nerfstudio.process_data.colmap_utils import colmap_to_json
+    num_matched = colmap_to_json(
+        recon_dir=recon_dir,
+        output_dir=output_dir,
+        keep_original_world_coordinate=False,
+    )
+    print(f"[OK] Generated transforms.json with {num_matched} frames")
+
+    # Count total images for reporting
+    total_images = len(list(images_dir.glob("*.png")))
+    pct = 100.0 * num_matched / total_images if total_images > 0 else 0
+    print(f"[INFO] Matched {num_matched}/{total_images} images ({pct:.1f}%)")
+    if pct < 30:
+        print("[WARN] Low match rate. This can be caused by textureless scenes, "
+              "blurry images, or large viewpoint changes.")
 
 
 def patch_transforms_with_depth(output_dir):
@@ -297,12 +388,24 @@ def process(args):
     else:
         print(">>> Step 1/3: Skipping extraction (--skip-extraction) <<<")
         meta = {}
+        # Try to load previously saved metadata for intrinsics
+        meta_path = output_dir / "processing_meta.json"
+        if meta_path.exists():
+            with open(meta_path) as f:
+                meta = json.load(f)
+            print(f"[INFO] Loaded intrinsics from {meta_path}")
+
+    # Save processing metadata early (so --skip-extraction can load intrinsics)
+    if meta:
+        meta_path = output_dir / "processing_meta.json"
+        with open(meta_path, "w") as f:
+            json.dump(meta, f, indent=4)
 
     # Step 2: Run COLMAP
     if not args.skip_colmap:
         print()
         print(">>> Step 2/3: Running COLMAP for pose estimation <<<")
-        run_colmap(output_dir, matching_method=args.matching_method)
+        run_colmap(output_dir, matching_method=args.matching_method, meta=meta)
     else:
         print()
         print(">>> Step 2/3: Skipping COLMAP (--skip-colmap) <<<")
@@ -311,12 +414,6 @@ def process(args):
     print()
     print(">>> Step 3/3: Adding depth paths to transforms.json <<<")
     patch_transforms_with_depth(output_dir)
-
-    # Save processing metadata
-    if meta:
-        meta_path = output_dir / "processing_meta.json"
-        with open(meta_path, "w") as f:
-            json.dump(meta, f, indent=4)
 
     print()
     print(f"[OK] Dataset processed to: {output_dir}")

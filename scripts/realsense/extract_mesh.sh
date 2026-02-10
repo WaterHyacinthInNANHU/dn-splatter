@@ -21,6 +21,17 @@
 
 set -euo pipefail
 
+# Ensure CUDA toolkit is in PATH (needed by gsplat for JIT compilation)
+if ! command -v nvcc &>/dev/null; then
+    for cuda_dir in /usr/local/cuda /usr/local/cuda-12 /usr/local/cuda-11; do
+        if [[ -x "${cuda_dir}/bin/nvcc" ]]; then
+            export PATH="${cuda_dir}/bin:${PATH}"
+            export CUDA_HOME="${cuda_dir}"
+            break
+        fi
+    done
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 

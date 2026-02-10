@@ -105,17 +105,20 @@ fi
 # Install COLMAP (train/full only)
 if [[ "$MODE" != "collect" ]]; then
     if ! command -v colmap &> /dev/null; then
-        info "COLMAP not found. Installing via conda..."
-        if command -v conda &> /dev/null; then
-            conda install -c conda-forge colmap -y
-            ok "COLMAP installed via conda"
-        else
-            warn "conda not found, cannot auto-install COLMAP."
-            warn "Install manually: sudo apt install colmap"
-            warn "  OR install conda first, then re-run this script."
-        fi
+        warn "COLMAP not found in PATH."
+        warn "COLMAP is required for camera pose estimation (especially D415)."
+        echo ""
+        info "Install options (pick one):"
+        echo "  1. System-wide (recommended):  sudo apt install colmap"
+        echo "  2. Via conda into a specific env:"
+        echo "       conda install -n <ENV_NAME> -c conda-forge colmap -y"
+        echo "     Then ensure that env is activated (or its bin/ is in PATH)"
+        echo "     when running the pipeline."
+        echo ""
+        warn "Re-run this script after installing COLMAP, or install it later"
+        warn "before running process_d415.sh or run_pipeline.sh."
     else
-        ok "COLMAP found"
+        ok "COLMAP found: $(command -v colmap)"
     fi
 fi
 
@@ -155,6 +158,11 @@ fi
 if [[ "$MODE" != "collect" ]]; then
     info "Installing nerfstudio 1.1.3..."
     uv pip install nerfstudio==1.1.3
+
+    # Pin numpy <2.0: nerfstudio 1.1.3 C extensions were compiled against numpy 1.x
+    # and crash at runtime with numpy 2.x (ABI incompatibility)
+    info "Pinning numpy <2.0 (nerfstudio 1.x compatibility)..."
+    uv pip install "numpy<2.0"
 fi
 
 # ---- Install DN-Splatter (train/full) -------------------------------------
@@ -178,6 +186,45 @@ fi
 # ---- Install pyrealsense2 (all modes) -------------------------------------
 info "Installing pyrealsense2..."
 uv pip install pyrealsense2
+
+# ---- Patch nerfstudio for newer COLMAP (train/full) ----------------------
+if [[ "$MODE" != "collect" ]]; then
+    info "Patching nerfstudio COLMAP flags for newer COLMAP versions..."
+    COLMAP_UTILS=$(python -c "import nerfstudio.process_data.colmap_utils as m; print(m.__file__)" 2>/dev/null || true)
+    if [[ -n "$COLMAP_UTILS" && -f "$COLMAP_UTILS" ]]; then
+        # Newer COLMAP renamed SiftExtraction/SiftMatching to FeatureExtraction/FeatureMatching
+        if grep -q "SiftExtraction.use_gpu" "$COLMAP_UTILS" 2>/dev/null; then
+            sed -i 's/SiftExtraction\.use_gpu/FeatureExtraction.use_gpu/g' "$COLMAP_UTILS"
+            sed -i 's/SiftMatching\.use_gpu/FeatureMatching.use_gpu/g' "$COLMAP_UTILS"
+            ok "Patched COLMAP flags in nerfstudio"
+        else
+            ok "COLMAP flags already up-to-date in nerfstudio"
+        fi
+    else
+        warn "Could not locate nerfstudio colmap_utils.py — skipping patch"
+    fi
+fi
+
+# ---- Verify CUDA toolkit (train/full) ------------------------------------
+if [[ "$MODE" != "collect" ]]; then
+    if ! command -v nvcc &>/dev/null; then
+        # Try to find CUDA toolkit
+        for cuda_dir in /usr/local/cuda /usr/local/cuda-12 /usr/local/cuda-11; do
+            if [[ -x "${cuda_dir}/bin/nvcc" ]]; then
+                warn "nvcc not in PATH but found at ${cuda_dir}/bin/nvcc"
+                warn "Add to your shell profile:  export PATH=${cuda_dir}/bin:\$PATH"
+                warn "                            export CUDA_HOME=${cuda_dir}"
+                break
+            fi
+        done
+        if ! command -v nvcc &>/dev/null; then
+            warn "CUDA toolkit (nvcc) not found. gsplat JIT compilation will fail."
+            warn "Install CUDA toolkit or add nvcc to PATH."
+        fi
+    else
+        ok "CUDA toolkit found: $(nvcc --version | grep release)"
+    fi
+fi
 
 # ---- Verify ----------------------------------------------------------------
 info "Verifying installation..."

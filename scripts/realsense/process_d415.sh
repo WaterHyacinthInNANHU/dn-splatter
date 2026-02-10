@@ -80,15 +80,16 @@ echo "  Every N frames: ${EVERY_N}"
 echo "  COLMAP method:  ${MATCHING_METHOD}"
 echo "============================================"
 
-# Build command
+# Build command - positional args (input, output_dir) must come before flags
 CMD=(python "${PROJECT_DIR}/dn_splatter/scripts/process_d415.py"
-     "$INPUT"
-     --every-n-frames "$EVERY_N"
-     --matching-method "$MATCHING_METHOD")
+     "$INPUT")
 
 if [[ -n "$OUTPUT" ]]; then
     CMD+=("$OUTPUT")
 fi
+
+CMD+=(--every-n-frames "$EVERY_N"
+      --matching-method "$MATCHING_METHOD")
 
 if [[ "$SKIP_EXTRACTION" == true ]]; then
     CMD+=(--skip-extraction)
