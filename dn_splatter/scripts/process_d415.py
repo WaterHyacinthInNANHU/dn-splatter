@@ -430,8 +430,13 @@ def process(args):
     print(f"  │   └── ...")
     print(f"  └── colmap/sparse/0/     (COLMAP reconstruction)")
     print()
-    print("Next step: train DN-Splatter")
-    print(f"  ./scripts/realsense/train.sh {output_dir}")
+    print("Next steps:")
+    print(f"  1. Visualize poses + point cloud (sanity check):")
+    print(f"     ./scripts/realsense/visualize.sh {output_dir}")
+    print(f"     ./scripts/realsense/visualize.sh {output_dir} --dense --max-depth 5.0")
+    print()
+    print(f"  2. Train DN-Splatter:")
+    print(f"     ./scripts/realsense/train.sh {output_dir}")
 
 
 if __name__ == "__main__":

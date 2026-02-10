@@ -16,6 +16,7 @@ Supports two camera paths:
 - [Pipeline Overview](#pipeline-overview)
 - [Step 1: Record Data](#step-1-record-data)
 - [Step 2: Process Recording](#step-2-process-recording)
+- [Step 2.5: Visualize Dataset (Sanity Check)](#step-25-visualize-dataset-sanity-check)
 - [Step 3: Train DN-Splatter](#step-3-train-dn-splatter)
 - [Step 4: Extract Mesh](#step-4-extract-mesh)
 - [Full Pipeline (One Command)](#full-pipeline-one-command)
@@ -245,6 +246,10 @@ SpectacularAI uses its own recording format (`data.jsonl` + `data.mkv` + `calibr
   └──────┬──────┘
          │  dataset/ (transforms.json, images/, depth/, sparse_pc.ply)
          ▼
+  ┌─────────────┐    visualize_dataset.py (web-based viser viewer)
+  │ 2.5 Visualize│   Verify poses + depth alignment before training
+  └──────┬──────┘
+         ▼
      (same as above: Train → Mesh)
 ```
 
@@ -351,6 +356,43 @@ datasets/custom/my_scene/
     ├── images.bin
     └── points3D.bin
 ```
+
+---
+
+## Step 2.5: Visualize Dataset (Sanity Check)
+
+After processing, verify that camera poses and depth maps are correct before committing to training. This launches a web-based 3D viewer (viser) accessible from your browser — works on remote servers.
+
+```bash
+# Quick check: sparse point cloud + camera frustums
+./scripts/realsense/visualize.sh ./datasets/custom/my_scene
+
+# Full check: also backproject depth frames into a dense point cloud
+./scripts/realsense/visualize.sh ./datasets/custom/my_scene --dense --max-depth 5.0
+
+# Custom port (useful if default 8890 is taken)
+./scripts/realsense/visualize.sh ./datasets/custom/my_scene --dense --port 8080
+```
+
+Then open `http://<your-server>:8890` in your browser.
+
+| Flag | Description |
+|---|---|
+| `--dense` | Backproject depth frames into dense colored point clouds |
+| `--every-n N` | Backproject every Nth frame (default: 10) |
+| `--max-depth M` | Max depth in meters for backprojection (default: 10.0) |
+| `--frustum-scale S` | Camera frustum display size (default: 0.15) |
+| `--point-size S` | Point size for point clouds (default: 0.005) |
+| `--no-sparse` | Don't load `sparse_pc.ply` |
+| `--host HOST` | Bind address (default: 0.0.0.0) |
+| `--port PORT` | Viewer port (default: 8890) |
+
+### What to Check
+
+- **Camera frustums** should trace a smooth path through the scene (blue→red color gradient shows frame order)
+- **Sparse point cloud** (`sparse_pc.ply` from COLMAP) should roughly overlap with the camera positions
+- **Dense depth** (with `--dense`) from different frames should align into a coherent scene — if depth clouds from different viewpoints don't overlap, poses or intrinsics are wrong
+- Use the sidebar scene tree to toggle `/sparse_pc`, `/cameras`, and `/dense_depth` on/off
 
 ---
 
@@ -655,6 +697,7 @@ All scripts are in `scripts/realsense/`:
 | `record_d415.sh` | Record with D415 to .bag (pyrealsense2) |
 | `process.sh` | Process D435i/D455 recording (SpectacularAI SLAM) |
 | `process_d415.sh` | Process D415 .bag (COLMAP for poses) |
+| `visualize.sh` | Visualize poses + point clouds (web-based, pre-training sanity check) |
 | `train.sh` | Train DN-Splatter model |
 | `extract_mesh.sh` | Extract mesh from trained model |
 | `run_pipeline.sh` | End-to-end pipeline (`--camera d415` or `d435i`) |
